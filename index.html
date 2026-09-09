@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>はこあけタイマー</title>
+  <style>
+    :root {
+      --bg-color: #f8f9fa;
+      --card-bg: #e9ecef;
+      --card-finished-bg: #f8d7da;
+      --card-finished-border: #f5c2c7;
+      --text-color: #212529;
+      --primary-color: #6750a4;
+      --danger-color: #ba1a1a;
+      --disabled-color: #adb5bd;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background-color: var(--bg-color);
+      color: var(--text-color);
+      margin: 0;
+      padding: 16px;
+      display: flex;
+      justify-content: center;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 480px;
+      box-sizing: border-box;
+    }
+
+    h1 {
+      font-size: 22px;
+      margin-top: 0;
+      margin-bottom: 16px;
+    }
+
+    .button-group {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .btn {
+      flex: 1;
+      padding: 12px 8px;
+      font-size: 16px;
+      font-weight: bold;
+      border: none;
+      border-radius: 20px;
+      cursor: pointer;
+      color: white;
+      transition: background-color 0.2s;
+    }
+
+    .btn-primary {
+      background-color: var(--primary-color);
+    }
+
+    .btn-danger {
+      background-color: var(--danger-color);
+    }
+
+    .btn:disabled {
+      background-color: var(--disabled-color);
+      cursor: not-allowed;
+    }
+
+    .timer-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .timer-card {
+      background-color: var(--card-bg);
+      border-radius: 12px;
+      padding: 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      transition: background-color 0.3s;
+    }
+
+    .timer-card.finished {
+      background-color: var(--card-finished-bg);
+      border: 1px solid var(--card-finished-border);
+    }
+
+    .timer-info .title {
+      font-size: 18px;
+      margin-bottom: 4px;
+    }
+
+    .timer-info .time {
+      font-size: 24px;
+      font-weight: bold;
+    }
+
+    .btn-delete {
+      background-color: var(--danger-color);
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 16px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    .btn-delete:disabled {
+      background-color: var(--disabled-color);
+      cursor: not-allowed;
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <h1>はこあけタイマー</h1>
+
+  <div class="button-group">
+    <button id="addBtn" class="btn btn-primary">追加 (空き: 10)</button>
+    <button id="clearBtn" class="btn btn-danger" disabled>全クリア</button>
+  </div>
+
+  <div id="timerList" class="timer-list"></div>
+</div>
+
+<script>
+  // 音声ファイルの準備 (.wav に設定)
+  const soundPaths = {};
+  for (let i = 0; i <= 9; i++) {
+    soundPaths[`sound${i}`] = `./sounds/sound${i}.wav`;
+  }
+  soundPaths['all'] = './sounds/all.wav';
+
+  // --- 音声再生キュー管理クラス (SoundQueueManager) ---
+  class SoundQueueManager {
+    constructor() {
+      this.queue = [];
+      this.isPlaying = false;
+      this.audio = new Audio();
+
+      this.audio.addEventListener('ended', () => {
+        this.isPlaying = false;
+        this.playNext();
+      });
+
+      this.audio.addEventListener('error', () => {
+        console.warn("音声ファイルの読み込みまたは再生に失敗しました:", this.audio.src);
+        this.isPlaying = false;
+        this.playNext();
+      });
+    }
+
+    // スマホの自動再生制限対策：ユーザー操作時に無音を鳴らしてロック解除
+    unlockAudio() {
+      if (!this.unlocked) {
+        this.audio.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+        this.audio.play().then(() => {
+          this.unlocked = true;
+        }).catch(() => {});
+      }
+    }
+
+    enqueue(soundKey) {
+      if (soundPaths[soundKey]) {
+        this.queue.push(soundPaths[soundKey]);
+        if (!this.isPlaying) {
+          this.playNext();
+        }
+      }
+    }
+
+    playNext() {
+      if (this.queue.length === 0) {
+        this.isPlaying = false;
+        return;
+      }
+      this.isPlaying = true;
+      const nextSrc = this.queue.shift();
+      this.audio.src = nextSrc;
+      
+      this.audio.play().catch(e => {
+        console.warn("自動再生が制限されたか再生エラーが発生しました:", e);
+        this.isPlaying = false;
+        this.playNext();
+      });
+    }
+  }
+
+  const soundQueue = new SoundQueueManager();
+
+  // --- アプリケーションの状態 ---
+  const TARGET_DURATION_SECONDS = 600; // 10分
+  const ID_ORDER = [0, 9, 8, 7, 6, 5, 4, 3, 2, 1];
+  
+  let timerList = [];
+  let hasPlayedAllSound = false;
+
+  // DOM要素
+  const addBtn = document.getElementById('addBtn');
+  const clearBtn = document.getElementById('clearBtn');
+  const timerListContainer = document.getElementById('timerList');
+
+  // 未使用の優先度IDを取得
+  function getAvailableId() {
+    return ID_ORDER.find(id => !timerList.some(t => t.id === id));
+  }
+
+  // タイマー追加
+  addBtn.addEventListener('click', () => {
+    soundQueue.unlockAudio(); // スマホの音声再生制限を解除
+    const availableId = getAvailableId();
+    if (availableId !== undefined && timerList.length < 10) {
+      timerList.push({
+        id: availableId,
+        targetDurationSeconds: TARGET_DURATION_SECONDS,
+        startTimeMillis: performance.now(),
+        isFinished: false
+      });
+      render();
+    }
+  });
+
+  // 全クリア
+  clearBtn.addEventListener('click', () => {
+    timerList = [];
+    hasPlayedAllSound = false;
+    render();
+  });
+
+  // タイマー削除（最後に追加されたもののみ）
+  function deleteTimer(id) {
+    const latestTimer = timerList[timerList.length - 1];
+    if (latestTimer && latestTimer.id === id) {
+      timerList.pop();
+      render();
+    }
+  }
+
+  // 時間フォーマット (MM:SS)
+  function formatTime(seconds) {
+    const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+    const s = Math.floor(seconds % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  }
+
+  // --- メインループ & 描画 ---
+  function updateAndRender() {
+    const currentTimeMillis = performance.now();
+
+    // 1. 各タイマーの状態更新と音声再生判定
+    timerList.forEach(timer => {
+      const elapsedSeconds = Math.floor((currentTimeMillis - timer.startTimeMillis) / 1000);
+      const remaining = timer.targetDurationSeconds - elapsedSeconds;
+
+      if (remaining <= 0 && !timer.isFinished) {
+        timer.isFinished = true;
+        soundQueue.enqueue(`sound${timer.id}`);
+      }
+    });
+
+    // 2. 全10人分終了の判定
+    const isAllTenFinished = timerList.length === 10 && timerList.every(t => t.isFinished);
+    if (isAllTenFinished && !hasPlayedAllSound) {
+      hasPlayedAllSound = true;
+      soundQueue.enqueue('all');
+    }
+    if (timerList.length < 10) {
+      hasPlayedAllSound = false;
+    }
+
+    // 3. UIの更新
+    renderUI(currentTimeMillis);
+  }
+
+  function renderUI(currentTimeMillis) {
+    const availableId = getAvailableId();
+    const remainingCapacity = 10 - timerList.length;
+
+    addBtn.disabled = availableId === undefined || timerList.length >= 10;
+    addBtn.textContent = `追加 (空き: ${remainingCapacity})`;
+    clearBtn.disabled = timerList.length === 0;
+
+    const latestTimerId = timerList.length > 0 ? timerList[timerList.length - 1].id : null;
+
+    timerListContainer.innerHTML = '';
+    timerList.forEach(timer => {
+      const elapsedSeconds = Math.floor((currentTimeMillis - timer.startTimeMillis) / 1000);
+      const remainingSeconds = Math.max(0, timer.targetDurationSeconds - elapsedSeconds);
+
+      const card = document.createElement('div');
+      card.className = `timer-card ${timer.isFinished ? 'finished' : ''}`;
+
+      const infoDiv = document.createElement('div');
+      infoDiv.className = 'timer-info';
+
+      const title = document.createElement('div');
+      title.className = 'title';
+      title.textContent = `${timer.id} 番の方`;
+
+      const time = document.createElement('div');
+      time.className = 'time';
+      time.textContent = timer.isFinished ? '10分経過！' : formatTime(remainingSeconds);
+
+      infoDiv.appendChild(title);
+      infoDiv.appendChild(time);
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'btn-delete';
+      deleteBtn.textContent = '削除';
+      deleteBtn.disabled = timer.id !== latestTimerId;
+      deleteBtn.onclick = () => deleteTimer(timer.id);
+
+      card.appendChild(infoDiv);
+      card.appendChild(deleteBtn);
+
+      timerListContainer.appendChild(card);
+    });
+  }
+
+  function render() {
+    renderUI(performance.now());
+  }
+
+  setInterval(updateAndRender, 500);
+  render();
+</script>
+</body>
+</html>
