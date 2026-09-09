@@ -130,19 +130,24 @@
 </div>
 
 <script>
-  // 音声ファイルの準備 (.wav に設定)
+  // 音声ファイルの準備
   const soundPaths = {};
   for (let i = 0; i <= 9; i++) {
     soundPaths[`sound${i}`] = `./sounds/sound${i}.wav`;
   }
   soundPaths['all'] = './sounds/all.wav';
 
-  // --- 音声再生キュー管理クラス (SoundQueueManager) ---
+  // --- 音声再生キュー & バックグラウンド維持 ---
   class SoundQueueManager {
     constructor() {
       this.queue = [];
       this.isPlaying = false;
       this.audio = new Audio();
+      
+      // 無音BGM（バックグラウンド停止防止用）
+      this.silentBgm = new Audio("data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=");
+      this.silentBgm.loop = true;
+      this.isBgmStarted = false;
 
       this.audio.addEventListener('ended', () => {
         this.isPlaying = false;
@@ -150,18 +155,16 @@
       });
 
       this.audio.addEventListener('error', () => {
-        console.warn("音声ファイルの読み込みまたは再生に失敗しました:", this.audio.src);
         this.isPlaying = false;
         this.playNext();
       });
     }
 
-    // スマホの自動再生制限対策：ユーザー操作時に無音を鳴らしてロック解除
-    unlockAudio() {
-      if (!this.unlocked) {
-        this.audio.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
-        this.audio.play().then(() => {
-          this.unlocked = true;
+    // 初回ボタンタップ時に無音BGMを開始してスリープ防止＆音声ロック解除
+    startBackgroundKeepAlive() {
+      if (!this.isBgmStarted) {
+        this.silentBgm.play().then(() => {
+          this.isBgmStarted = true;
         }).catch(() => {});
       }
     }
@@ -185,7 +188,6 @@
       this.audio.src = nextSrc;
       
       this.audio.play().catch(e => {
-        console.warn("自動再生が制限されたか再生エラーが発生しました:", e);
         this.isPlaying = false;
         this.playNext();
       });
@@ -195,25 +197,22 @@
   const soundQueue = new SoundQueueManager();
 
   // --- アプリケーションの状態 ---
-  const TARGET_DURATION_SECONDS = 600; // 10分
+  const TARGET_DURATION_SECONDS = 60; // 10分
   const ID_ORDER = [0, 9, 8, 7, 6, 5, 4, 3, 2, 1];
   
   let timerList = [];
   let hasPlayedAllSound = false;
 
-  // DOM要素
   const addBtn = document.getElementById('addBtn');
   const clearBtn = document.getElementById('clearBtn');
   const timerListContainer = document.getElementById('timerList');
 
-  // 未使用の優先度IDを取得
   function getAvailableId() {
     return ID_ORDER.find(id => !timerList.some(t => t.id === id));
   }
 
-  // タイマー追加
   addBtn.addEventListener('click', () => {
-    soundQueue.unlockAudio(); // スマホの音声再生制限を解除
+    soundQueue.startBackgroundKeepAlive(); // バックグラウンド維持開始
     const availableId = getAvailableId();
     if (availableId !== undefined && timerList.length < 10) {
       timerList.push({
@@ -226,14 +225,12 @@
     }
   });
 
-  // 全クリア
   clearBtn.addEventListener('click', () => {
     timerList = [];
     hasPlayedAllSound = false;
     render();
   });
 
-  // タイマー削除（最後に追加されたもののみ）
   function deleteTimer(id) {
     const latestTimer = timerList[timerList.length - 1];
     if (latestTimer && latestTimer.id === id) {
@@ -242,18 +239,15 @@
     }
   }
 
-  // 時間フォーマット (MM:SS)
   function formatTime(seconds) {
     const m = Math.floor(seconds / 60).toString().padStart(2, '0');
     const s = Math.floor(seconds % 60).toString().padStart(2, '0');
     return `${m}:${s}`;
   }
 
-  // --- メインループ & 描画 ---
   function updateAndRender() {
     const currentTimeMillis = performance.now();
 
-    // 1. 各タイマーの状態更新と音声再生判定
     timerList.forEach(timer => {
       const elapsedSeconds = Math.floor((currentTimeMillis - timer.startTimeMillis) / 1000);
       const remaining = timer.targetDurationSeconds - elapsedSeconds;
@@ -264,7 +258,6 @@
       }
     });
 
-    // 2. 全10人分終了の判定
     const isAllTenFinished = timerList.length === 10 && timerList.every(t => t.isFinished);
     if (isAllTenFinished && !hasPlayedAllSound) {
       hasPlayedAllSound = true;
@@ -274,7 +267,6 @@
       hasPlayedAllSound = false;
     }
 
-    // 3. UIの更新
     renderUI(currentTimeMillis);
   }
 
