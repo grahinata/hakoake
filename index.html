@@ -130,21 +130,18 @@
 </div>
 
 <script>
-  // 音声ファイルの準備
   const soundPaths = {};
   for (let i = 0; i <= 9; i++) {
     soundPaths[`sound${i}`] = `./sounds/sound${i}.wav`;
   }
   soundPaths['all'] = './sounds/all.wav';
 
-  // --- 音声再生キュー & バックグラウンド維持 ---
   class SoundQueueManager {
     constructor() {
       this.queue = [];
       this.isPlaying = false;
       this.audio = new Audio();
       
-      // 無音BGM（バックグラウンド停止防止用）
       this.silentBgm = new Audio("data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=");
       this.silentBgm.loop = true;
       this.isBgmStarted = false;
@@ -160,13 +157,15 @@
       });
     }
 
-    // 初回ボタンタップ時に無音BGMを開始してスリープ防止＆音声ロック解除
     startBackgroundKeepAlive() {
-      if (!this.isBgmStarted) {
-        this.silentBgm.play().then(() => {
-          this.isBgmStarted = true;
-        }).catch(() => {});
-      }
+      // 既に開始処理に入っている場合は二重で実行しない（フリーズ防止）
+      if (this.isBgmStarted) return;
+      this.isBgmStarted = true;
+
+      this.silentBgm.play().catch(e => {
+        // 再生拒否された場合はフラグを戻して再試行可能にする
+        this.isBgmStarted = false;
+      });
     }
 
     enqueue(soundKey) {
@@ -196,8 +195,7 @@
 
   const soundQueue = new SoundQueueManager();
 
-  // --- アプリケーションの状態 ---
-  const TARGET_DURATION_SECONDS = 60; // 10分
+  const TARGET_DURATION_SECONDS = 60;//時間設定
   const ID_ORDER = [0, 9, 8, 7, 6, 5, 4, 3, 2, 1];
   
   let timerList = [];
@@ -212,7 +210,7 @@
   }
 
   addBtn.addEventListener('click', () => {
-    soundQueue.startBackgroundKeepAlive(); // バックグラウンド維持開始
+    soundQueue.startBackgroundKeepAlive();
     const availableId = getAvailableId();
     if (availableId !== undefined && timerList.length < 10) {
       timerList.push({
@@ -280,7 +278,10 @@
 
     const latestTimerId = timerList.length > 0 ? timerList[timerList.length - 1].id : null;
 
+    // DOMの再構築（Inner HTMLクリア）の回数を減らし、描画負荷を下げる
     timerListContainer.innerHTML = '';
+    const fragment = document.createDocumentFragment();
+
     timerList.forEach(timer => {
       const elapsedSeconds = Math.floor((currentTimeMillis - timer.startTimeMillis) / 1000);
       const remainingSeconds = Math.max(0, timer.targetDurationSeconds - elapsedSeconds);
@@ -311,8 +312,10 @@
       card.appendChild(infoDiv);
       card.appendChild(deleteBtn);
 
-      timerListContainer.appendChild(card);
+      fragment.appendChild(card);
     });
+
+    timerListContainer.appendChild(fragment);
   }
 
   function render() {
