@@ -136,66 +136,110 @@
   }
   soundPaths['all'] = './sounds/all.wav';
 
+  // --- Web Audio API を使用した堅牢な音声マネージャー ---
   class SoundQueueManager {
     constructor() {
       this.queue = [];
       this.isPlaying = false;
-      this.audio = new Audio();
-      
-      this.silentBgm = new Audio("data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=");
-      this.silentBgm.loop = true;
-      this.isBgmStarted = false;
+      this.audioCtx = null;
+      this.audioBuffers = {};
+      this.unlocked = false;
 
-      this.audio.addEventListener('ended', () => {
-        this.isPlaying = false;
-        this.playNext();
-      });
-
-      this.audio.addEventListener('error', () => {
-        this.isPlaying = false;
-        this.playNext();
-      });
+      // 無音再生用のHTMLAudioElement（バックグラウンド維持用）
+      this.silentAudio = new Audio("data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=");
+      this.silentAudio.loop = true;
     }
 
-    startBackgroundKeepAlive() {
-      // 既に開始処理に入っている場合は二重で実行しない（フリーズ防止）
-      if (this.isBgmStarted) return;
-      this.isBgmStarted = true;
+    // 初期化 ＆ タップ時の自動再生制限（制限解除）処理
+    unlock() {
+      if (!this.audioCtx) {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        this.audioCtx = new AudioContext();
+      }
 
-      this.silentBgm.play().catch(e => {
-        // 再生拒否された場合はフラグを戻して再試行可能にする
-        this.isBgmStarted = false;
-      });
+      if (this.audioCtx.state === 'suspended') {
+        this.audioCtx.resume();
+      }
+
+      if (!this.unlocked) {
+        this.silentAudio.play().then(() => {
+          this.unlocked = true;
+        }).catch(() => {});
+        this.preloadSounds();
+      }
     }
 
-    enqueue(soundKey) {
-      if (soundPaths[soundKey]) {
-        this.queue.push(soundPaths[soundKey]);
-        if (!this.isPlaying) {
-          this.playNext();
+    // 事前に音声ファイルを配列に読み込んでメモリ化（Androidの遅延防止）
+    async preloadSounds() {
+      for (const [key, url] of Object.entries(soundPaths)) {
+        if (!this.audioBuffers[key]) {
+          try {
+            const response = await fetch(url);
+            const arrayBuffer = await response.arrayBuffer();
+            this.audioBuffers[key] = await this.audioCtx.decodeAudioData(arrayBuffer);
+          } catch (e) {
+            console.warn(`音声読み込み失敗: ${key}`, e);
+          }
         }
       }
     }
 
-    playNext() {
+    enqueue(soundKey) {
+      this.queue.push(soundKey);
+      if (!this.isPlaying) {
+        this.playNext();
+      }
+    }
+
+    async playNext() {
       if (this.queue.length === 0) {
         this.isPlaying = false;
         return;
       }
+
       this.isPlaying = true;
-      const nextSrc = this.queue.shift();
-      this.audio.src = nextSrc;
-      
-      this.audio.play().catch(e => {
+      const soundKey = this.queue.shift();
+
+      if (!this.audioCtx) {
+        this.isPlaying = false;
+        return;
+      }
+
+      // バッファにない場合は再取得を試みる
+      if (!this.audioBuffers[soundKey]) {
+        try {
+          const response = await fetch(soundPaths[soundKey]);
+          const arrayBuffer = await response.arrayBuffer();
+          this.audioBuffers[soundKey] = await this.audioCtx.decodeAudioData(arrayBuffer);
+        } catch (e) {
+          this.isPlaying = false;
+          this.playNext();
+          return;
+        }
+      }
+
+      const buffer = this.audioBuffers[soundKey];
+      if (buffer) {
+        const source = this.audioCtx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(this.audioCtx.destination);
+        
+        source.onended = () => {
+          this.isPlaying = false;
+          this.playNext();
+        };
+
+        source.start(0);
+      } else {
         this.isPlaying = false;
         this.playNext();
-      });
+      }
     }
   }
 
   const soundQueue = new SoundQueueManager();
 
-  const TARGET_DURATION_SECONDS = 60;//時間設定
+  const TARGET_DURATION_SECONDS = 60;
   const ID_ORDER = [0, 9, 8, 7, 6, 5, 4, 3, 2, 1];
   
   let timerList = [];
@@ -210,7 +254,7 @@
   }
 
   addBtn.addEventListener('click', () => {
-    soundQueue.startBackgroundKeepAlive();
+    soundQueue.unlock(); // タップ時に必ず音声コンテキストを復帰させる
     const availableId = getAvailableId();
     if (availableId !== undefined && timerList.length < 10) {
       timerList.push({
@@ -224,6 +268,7 @@
   });
 
   clearBtn.addEventListener('click', () => {
+    soundQueue.unlock();
     timerList = [];
     hasPlayedAllSound = false;
     render();
@@ -278,7 +323,6 @@
 
     const latestTimerId = timerList.length > 0 ? timerList[timerList.length - 1].id : null;
 
-    // DOMの再構築（Inner HTMLクリア）の回数を減らし、描画負荷を下げる
     timerListContainer.innerHTML = '';
     const fragment = document.createDocumentFragment();
 
